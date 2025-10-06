@@ -5,139 +5,172 @@ import gymnasium as gym
 from gymnasium.spaces import Discrete, Box
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
 from collections import deque
+from datetime import datetime, timedelta
 
 class HouseEnv(gym.Env):
     def __init__(
             self, 
-            T_out_measurement : list,
+            T_out_measurement : list[float],
             dt: int = 600,
-            T_in_initial : float = 21.0,
-            C: float = 7.10**7, 
-            G: float = 100,
-            radiator_level: list = [0, 2000],   # Radiator power levels [W]
-            eta: float = 0.9,
-            render_mode: str = None,
-            window_size: int = 50
+            start_time: str = "2025-01-01 00:00:00", 
+            T_in_initial : float = None,
+            C: float = 7.10**7,                 # Thermal capacity of the building [J/K]
+            G: float = 100,                     # Thermal conductance of the building [W/K]
+            radiator_states: int = 2,           # Number of radiator power levels (0: off, 1: level 1, 2: level 2, etc.)
+            radiator_factor: float = 2000,      # Radiator factor [W], level 1 corresponds to 2000W, level 2 to 4000W, etc.
+            eta: float = 0.9,                   # Efficiency of the heating system 
+            owner_schedule: list[int] = [(0, 36), (108, 144)],  # Time stamps (in dt steps) when owners come back home (e.g., 36 for 6am, 108 for 18pm with dt=600s)
+            render_mode = None,                 # "human" for rendering, None for no rendering
+            window_size = None                  # time Window size for rendering
             ):
         
         super().__init__()
         
         # Parameters
-        self.C = C  # Thermal capacity of the building [J/K]
-        self.G = G  # Thermal conductance of the building [W/K]
-        self.radiator_level = radiator_level  # Radiator power levels [W]
+        self.C = C  
+        self.G = G  
+        self.radiator_states = np.arange(radiator_states)  # Radiator power levels [W]
+        self.radiator_factor = radiator_factor  # Radiator factor [W]
+        self.radiator_powers = [i * radiator_factor for i in self.radiator_states]  # Radiator power levels
         self.eta = eta  # Efficiency of the heating system
-        self.dt = dt  # Time step [s]
+        self.lambda_energy = 0.5  # Weight factor for energy consumption in the reward function
+
+        self.time_manager = TimeManager(
+            dt=dt, 
+            owner_schedule=owner_schedule,
+            start_time=start_time
+            )
+
         self.render_mode = render_mode
 
         # Action space: Radiator levels
-        self.action_space = Discrete(len(radiator_level))
+        self.action_space = Discrete(len(self.radiator_states))
 
         # Observation space
         low = np.concatenate((
             [-10.]*2,       # T_in and T_out
             [0.],           # radiator state
-            [0.],           # time before owners at home (minutes)
-            [0.],           # weekday
-            [0.]            # hour of the day
+            [0.],           # time step before owners are at home
+            [0.]            # time step of the day
             ), dtype=np.float32
         )
         high = np.concatenate((
             [40]*2,                 # T_in and T_out
             [self.action_space.n],  # radiator state
-            [23*60],                # time before owners at home (minutes)
-            [6.],                   # weekday
-            [23.]                   # hour of the day
+            [self.time_manager.steps_per_day],                  # time step before owners are at home
+            [self.time_manager.steps_per_day]                   # time step of the day
             ), dtype=np.float32
         )
         self.observation_space = Box(low=low, high=high, seed=42)
 
-    
         # Initial conditions
-        self.T_in_initial = T_in_initial  # Initial internal temperature [C]
-        self.T_in = T_in_initial  # Current internal temperature [C]
+        if T_in_initial is None and self.time_manager._is_owner_present():
+            self.T_in_initial = 21.0  # Initial internal temperature [C]
+        elif T_in_initial is None and not self.time_manager._is_owner_present():
+            self.T_in_initial = T_out_measurement[0]  # Initial internal temperature [C]
+        else:
+            self.T_in_initial = T_in_initial  # Initial internal temperature [C]
+        self.T_in = self.T_in_initial  # Current internal temperature [C]
 
         self.T_out_measurement = T_out_measurement  # External temperature profile [C]
         self.T_out = T_out_measurement[0]  # Current external temperature [C]
 
-        self.radiator_state = 0  # Radiator state {0: off, 1: on}
-        self.time_before_owners_come_back = 0  # Time before owners come back home [minutes]
-        self.weekday = 0  # Day of the week {0: Monday, ..., 6: Sunday}
-        self.hour_of_day = 0  # Hour of the day {0, ..., 23}
-        self.current_time = 0  # Current time in dt steps
+        self.radiator_state = 0  # Radiator state
 
         # Stop condition
         self.max_time = len(T_out_measurement) - 1 # Maximum time steps in the simulation
 
         if self.render_mode == "human":
-            self.window_size = window_size
-            self.time_history = deque([0]*window_size, maxlen=window_size)  # Time history for plotting
-            self.T_in_history = deque([T_in_initial]*window_size, maxlen=window_size)  # T_in history for plotting
-            self.T_out_history = deque([T_out_measurement[0]]*window_size, maxlen=window_size)  # T_out history for plotting
+            if not window_size:
+                self.window_size = self.time_manager.steps_per_day  # Default to one day
+            else:
+                self.window_size = window_size
+            self.time_history = deque([self.time_manager.current_step], maxlen=window_size)  # Time history for plotting
+            self.T_in_history = deque([T_in_initial], maxlen=window_size)  # T_in history for plotting
+            self.T_out_history = deque([T_out_measurement[0]], maxlen=window_size)  # T_out history for plotting
+            self.energy_consumption_history = deque([0.], maxlen=window_size)  # Power consumption history for plotting
 
-            self.fig, self.ax = plt.subplots()
-            self.line_T_out, = self.ax.plot(self.time_history, self.T_out_history, 'b', label='T_out')
-            self.line_T_in, = self.ax.plot(self.time_history, self.T_in_history, 'r', label='T_in')
-            self.line_target = self.ax.axhspan(20, 22, color='r', alpha=0.2, label='Target')
+            self.fig, self.ax = plt.subplots(ncols=2, figsize=(10,5))
+            self.line_T_out, = self.ax[0].plot(self.time_history, self.T_out_history, 'b', label='T_out')
+            self.line_T_in, = self.ax[0].plot(self.time_history, self.T_in_history, 'r', label='T_in')
+            self.line_target = self.ax[0].axhspan(20, 22, color='r', alpha=0.2, label='Target')
+
+            # Add a placeholder patch for owner presence legend
+            self.owner_presence_legend = self.ax[0].axvspan(1000, 1000, color='green', alpha=0.1, label='Owner Present')
+            self.owner_presence_patches = []
 
             T_max, T_min = max(25, self.T_out, self.T_in)+5, min(-10, self.T_out, self.T_in)-5
-            self.ax.set_ylim(T_min, T_max)
-            self.ax.set_xlabel(f'Time stamp (every {dt/60:.0f} min)')
-            self.ax.set_ylabel('Temperature (C)')
-            self.ax.legend(loc='lower left')
+            self.ax[0].set_ylim(T_min, T_max)
+            self.ax[0].set_xlabel(f'Time stamp (every {dt/60:.0f} min)')
+            self.ax[0].set_ylabel('Temperature (C)')
+            self.ax[0].legend(loc='lower left')
+
+            self.line_energy, = self.ax[1].plot(self.time_history, self.energy_consumption_history, 'g', label='Total energy Consumption (kWh)')
+            self.ax[1].set_ylim(0, 1.1*self.time_manager.dt.total_seconds()*max(self.radiator_powers)/self.eta)
+            self.ax[1].set_xlabel(f'Time stamp (every {dt/60:.0f} min)')
+            self.ax[1].set_ylabel('Total Energy Consumption (kWh)')
+            self.ax[1].legend(loc='upper left')
+
             plt.ion()
             self.fig.show()
             self.fig.canvas.draw()
     
     def step(self, 
-            action: int):
-        if action not in [0, 1]:
-            raise ValueError("Invalid action. Action must be 0 (off) or 1 (on).")
+            action: int
+            ):
+        # Validate action
+        if action not in self.radiator_states:
+            raise ValueError(f"Invalid action. Action must be a value between {self.radiator_states[0]} and {self.radiator_states[-1]}.")
         
+        # Apply action
         self.radiator_state = action
-        if self.radiator_state == 1:
-            P_radiator = 2000  # Radiator power when on [W]
-        else:
-            P_radiator = 0  # Radiator power when off [W]
-        
+        P_radiator = self.radiator_powers[self.radiator_state]
+        radiator_energy_consumption = (self.time_manager.dt.total_seconds() * P_radiator / self.eta ) / (3600*1000)  # in kWh
+
         # Update internal temperature using Euler method
         dT_in_dt = (self.G * (self.T_out - self.T_in) + P_radiator) / self.C
-        new_T_in = self.T_in + dT_in_dt * self.dt
+        new_T_in = self.T_in + dT_in_dt * self.time_manager.dt.total_seconds()
         self.T_in = new_T_in
 
-        # Update time and related variables
-        self.current_time += 1
-        self.T_out = self.T_out_measurement[self.current_time]
+        # Update time manager
+        self.time_manager.step()
 
-        # Update hour of day and weekday
-        if self.current_time % 6 == 0:
-            self.hour_of_day = (self.hour_of_day + 1) % 24
-            if self.hour_of_day == 0:
-                self.weekday = (self.weekday + 1) % 7
+        # Update time-related variables
+        self.T_out = self.T_out_measurement[self.time_manager.current_step]
         
-        # Construct observation
+        # Construct the initial observation
         observation = np.concatenate((
-            [self.T_in],                        # T_in
-            [self.T_out],                       # T_out
+            [self.T_in],  # Last 12 T_in values (2h history)
+            [self.T_out], # Last 12 T_out values (2h history)
             [self.radiator_state],
-            [self.time_before_owners_come_back],
-            [self.weekday],
-            [self.hour_of_day]
+            [self.time_manager.time_before_owners_come_back],
+            [self.time_manager.current_step]
         ))
 
         # Calculate reward
-        reward = - max(0, abs(self.T_in - 21) - 1)  # Penalize deviation from 21C beyond a tolerance of 1C
+        if self.time_manager.time_before_owners_come_back == 0:
+            temperature_reward = - max(0, abs(self.T_in - 21) - 1)  # Penalize deviation from 21 C beyond a tolerance of 1 C
+        else:
+            temperature_reward = 0  # No penalty when owners are not home
+        
+        energy_penalty = - radiator_energy_consumption * self.lambda_energy  # Penalize energy consumption
+
+        reward = temperature_reward + energy_penalty
 
         # Check if episode is done
-        terminated = self.current_time >= self.max_time
+        terminated = self.time_manager.current_step >= self.max_time
+        if terminated:
+            self.time_manager.reset()  # Reset time manager for next episode
         truncated = False
-        info = {}
+        info = {"energy_consumed": radiator_energy_consumption}
 
-        if self.render_mode == "human":
-            self.time_history.append(self.current_time)
+        if self.render_mode == "human" and not terminated:
+            self.time_history.append(self.time_manager.current_step)
             self.T_in_history.append(self.T_in)
             self.T_out_history.append(self.T_out)
+            self.energy_consumption_history.append(self.energy_consumption_history[-1] + radiator_energy_consumption)
             self.render()
 
         return observation, reward, terminated, truncated, info
@@ -146,39 +179,151 @@ class HouseEnv(gym.Env):
         # Update plot with current data
         self.line_T_in.set_data(self.time_history, self.T_in_history)
         self.line_T_out.set_data(self.time_history, self.T_out_history)
+
         T_max, T_min = max(25, *self.T_out_history, *self.T_in_history)+5, min(-10, *self.T_out_history, *self.T_in_history)-5
-        self.ax.set_ylim(T_min, T_max)
-        self.ax.set_xlim(min(self.time_history), max(self.time_history)+1)
-        self.ax.autoscale_view()
+        self.ax[0].set_ylim(T_min, T_max)
+        self.ax[0].set_xlim(min(self.time_history), max(self.time_history)+1)
+        self.ax[0].autoscale_view()
+
+        self.line_energy.set_data(self.time_history, self.energy_consumption_history)
+        self.ax[1].set_ylim(0, max(1, 1.1*max(self.energy_consumption_history)))
+        self.ax[1].set_xlim(min(self.time_history), max(self.time_history)+1)
+        self.ax[1].autoscale_view()
+
+        self._update_owner_presence_patches()
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
         plt.pause(0.01)
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
+
+        super().reset(seed=seed)
         # Initial conditions
         self.T_in = self.T_in_initial  # Initial internal temperature [C]
 
         self.T_out = self.T_out_measurement[0]  # Current external temperature [C]
         
-        self.radiator_state = 0  # Radiator state {0: off, 1: on}
-        self.time_before_owners_come_back = 0  # Time before owners come back home [minutes]
-        self.weekday = 0  # Day of the week {0: Monday, ..., 6: Sunday}
-        self.hour_of_day = 0  # Hour of the day {0, ..., 23}
-        self.current_time = 0  # Current time in dt steps
+        self.radiator_state = 0  # Radiator state
 
         if self.render_mode == "human":
-            self.time_history = deque([0]*self.window_size, maxlen=self.window_size)  # Time history for plotting
+            self.time_history = deque([self.time_manager.current_step]*self.window_size, maxlen=self.window_size)  # Time history for plotting
             self.T_in_history = deque([self.T_in_initial]*self.window_size, maxlen=self.window_size)  # T_in history for plotting
             self.T_out_history = deque([self.T_out_measurement[0]]*self.window_size, maxlen=self.window_size)  # T_out history for plotting
+            self.energy_consumption_history = deque([0.]*self.window_size, maxlen=self.window_size)  # Energy consumption history for plotting
         
         # Construct the initial observation
         observation = np.concatenate((
             [self.T_in],  # Last 12 T_in values (2h history)
             [self.T_out], # Last 12 T_out values (2h history)
             [self.radiator_state],
-            [self.time_before_owners_come_back],
-            [self.weekday],
-            [self.hour_of_day]
+            [self.time_manager.time_before_owners_come_back],
+            [self.time_manager.current_step]
         ))
 
         return observation, {}
+    
+    def _update_owner_presence_patches(self):
+        """Update axvspan patches to show owner presence periods in the current window."""
+        # Remove old patches
+        for patch in self.owner_presence_patches:
+            patch.remove()
+        self.owner_presence_patches.clear()
+
+        # Get current window range
+        min_step = min(self.time_history)
+        max_step = max(self.time_history)
+
+        # Calculate owner presence periods within the visible window
+        presence_periods = []
+        for step in range(min_step, max_step + 1):
+            step_in_day = step % self.time_manager.steps_per_day
+            is_present = any(start <= step_in_day < end for start, end in self.time_manager.owner_schedule)
+            
+            if is_present:
+                if not presence_periods or presence_periods[-1][1] != step - 1:
+                    # Start a new period
+                    presence_periods.append([step, step])
+                else:
+                    # Extend the current period
+                    presence_periods[-1][1] = step
+
+        # Create axvspan patches for each presence period
+        for start, end in presence_periods:
+            patch = self.ax[0].axvspan(start, end + 1, color='green', alpha=0.1, 
+                                    label='Owner Present' if not self.owner_presence_patches else '')
+            self.owner_presence_patches.append(patch)
+
+class TimeManager():
+    def __init__(self,
+                 dt,
+                 owner_schedule=[(0, 36), (108, 144)],
+                 start_time="2025-01-01 00:00:00"
+                 ):
+        """
+        Manages the simulation time and owner presence schedule. Everythin is in time steps of dt seconds.
+        Args:
+            dt (int): Time step in seconds.
+            owner_schedule (list of tuples): List of (start, end) time steps when owners are present.
+            start_time (str): Start time in "YYYY-MM-DD HH:MM:SS" format.
+        """
+        self.dt = timedelta(seconds=dt)
+        self.owner_schedule = owner_schedule
+        self.start_time = start_time
+        self.current_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+        self.current_step = 0
+        self.time_before_owners_come_back = self.owner_schedule[0][0]  # Initial time before owners come back (in time steps)
+
+        # Calculate the number of time steps per day
+        self.steps_per_day = int(timedelta(days=1).total_seconds() // self.dt.total_seconds())
+
+    def _is_owner_present(self):
+        """Returns True if the current time step is within an owner presence period."""
+        current_step_in_day = self.current_step % self.steps_per_day
+        for start, end in self.owner_schedule:
+            if start <= current_step_in_day < end:
+                return True
+        return False
+
+    def _update_time_before_return(self):
+        """Updates time_before_owners_come_back based on the current position."""
+        current_step_in_day = self.current_step % self.steps_per_day
+
+        if self._is_owner_present():
+            self.time_before_owners_come_back = 0
+        else:
+            # Find the next presence period
+            next_start = None
+            for start, end in self.owner_schedule:
+                if current_step_in_day < start:
+                    next_start = start
+                    break
+            if next_start is not None:
+                self.time_before_owners_come_back = next_start - current_step_in_day
+            else:
+                # If we are past all periods, wait for the first period the next day
+                self.time_before_owners_come_back = self.steps_per_day - current_step_in_day + self.owner_schedule[0][0]
+
+    def step(self):
+        self.current_time += self.dt
+        self.current_step += 1
+        self._update_time_before_return()
+
+    def reset(self):
+        self.current_time = datetime.strptime(self.start_time, "%Y-%m-%d %H:%M:%S")
+        self.current_step = 0
+        self.time_before_owners_come_back = self.owner_schedule[0][0]
+        
+    @property
+    def hour_of_day(self):
+        return self.current_time.hour
+
+    @property
+    def weekday(self):
+        return self.current_time.weekday()
+
+
+if __name__ == "__main__":
+    timemanager = TimeManager(dt=600, owner_schedule=[(10,36), (108, 144)], start_time="2025-01-01 00:00:00")
+    for _ in range(150):
+        print(f"Time: {timemanager.current_time}, Hour: {timemanager.hour_of_day}, Weekday: {timemanager.weekday}, Time before owners come back: {timemanager.time_before_owners_come_back} steps")
+        timemanager.step()
