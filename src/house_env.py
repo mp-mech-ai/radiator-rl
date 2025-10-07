@@ -5,7 +5,6 @@ import gymnasium as gym
 from gymnasium.spaces import Discrete, Box
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -197,7 +196,7 @@ class HouseEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
 
-        super().reset(seed=seed)
+        super().reset(seed=seed, options=options)
         # Initial conditions
         self.T_in = self.T_in_initial  # Initial internal temperature [C]
 

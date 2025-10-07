@@ -1,5 +1,4 @@
 house_env1:
-  measure: synthetic
   learning_rate: 0.001
   batch_size: 32
   gamma: 0.99

@@ -6,23 +6,23 @@ from dqn import DQN
 from house_env import HouseEnv
 from collections import deque
 import matplotlib.pyplot as plt
-
-def load_hyperparameters(path, key="house_env1"):
-    with open(path, "r") as f:
-        params = yaml.safe_load(f)
-    return params[key]
-
+import pandas as pd
+import os
+from gymnasium.vector import SyncVectorEnv
+from datetime import datetime
 class DQNAgent:
     def __init__(
         self,
         hidden_dim,
         num_layers,
-        output_dim=5,   # Number of radiator states
-        history_length=12,     # 12 time steps history (2 hours with dt=600s)
+        output_dim=5,           # Number of radiator states
+        history_length=12,      # 12 time steps history (2 hours with dt=600s)
         hyperparams_path="./src/hyperparameters.yml",
-        device="cpu"
+        device="cpu",
+        data_path=None,  
+        num_workers=1
     ):
-        hp = load_hyperparameters(hyperparams_path)
+        hp = self._load_hyperparameters(hyperparams_path)
         self.device = device
         self.learning_rate = hp["learning_rate"]
         self.gamma = hp["gamma"]
@@ -42,11 +42,16 @@ class DQNAgent:
         self.policy_dqn = None
         self.target_dqn = None
 
-        if hp["measure"] == "synthetic":
+        self.num_workers = num_workers
+        if not data_path:
             N_day = 1                   # Number of days to simulate
-            dt = 600                    # Time step in seconds (10 minutes)
-            self.max_time_step = N_day*24*60*60 // dt       # Total number of time steps
-            self.T_out_measurement = 10 + 5*np.sin(-np.pi/2 + 2*np.pi*np.arange(N_day*24*3600//dt)/(24*3600//dt)) + np.random.randn(N_day*24*3600//dt)/5
+            self.dt = 600                    # Time step in seconds (10 minutes)
+            self.max_time_step = N_day*24*60*60 // self.dt       # Total number of time steps
+            self.T_out_measurement = 10 + 5*np.sin(-np.pi/2 + 2*np.pi*np.arange(N_day*24*3600//self.dt)/(24*3600//self.dt)) \
+                 + np.random.randn(N_day*24*3600//self.dt)/5
+            self.start_time = "2025-01-01 00:00:00"
+        else:
+            self.T_out_measurement, self.dt, self.start_time = self._get_T_measurement(data_path)
         
     def get_history_tensor(self):
         """Convert current history deque to a tensor, padding if necessary."""
@@ -65,15 +70,16 @@ class DQNAgent:
     def run(self, 
             is_training=True, 
             render=False,
-            epoches=1000
+            episodes=1000
             ):
         
-
         radiator_factor = 2000 / self.output_dim  # Radiator power factor
         render_mode = "human" if render else None
         
         env = HouseEnv(
             T_out_measurement=list(self.T_out_measurement), 
+            dt=self.dt,
+            start_time=self.start_time,
             radiator_states=self.output_dim, 
             radiator_factor=radiator_factor, 
             render_mode=render_mode,
@@ -85,8 +91,20 @@ class DQNAgent:
         reward_per_episode = []
         if is_training or self.policy_dqn is None or self.target_dqn is None:
             # Initialize new networks
-            self.policy_dqn = DQN(state_dim=num_states, hidden_size=self.hidden_dim, num_layers=self.num_layers, action_dim=num_actions).to(self.device)
-            self.target_dqn = DQN(state_dim=num_states, hidden_size=self.hidden_dim, num_layers=self.num_layers, action_dim=num_actions).to(self.device)
+            self.policy_dqn = DQN(
+                state_dim=num_states, 
+                hidden_size=self.hidden_dim, 
+                num_layers=self.num_layers, 
+                action_dim=num_actions
+                ).to(self.device)
+            
+            self.target_dqn = DQN(
+                state_dim=num_states, 
+                hidden_size=self.hidden_dim, 
+                num_layers=self.num_layers, 
+                action_dim=num_actions
+                ).to(self.device)
+            
             self.target_dqn.load_state_dict(self.policy_dqn.state_dict())
             self.target_dqn.eval()
         else:
@@ -100,7 +118,7 @@ class DQNAgent:
             memory = ReplayBuffer(self.memory_size)
             epsilon = self.epsilon_start
 
-        for episode in range(epoches):
+        for episode in range(episodes):
             self.history.clear()
 
             state, _ = env.reset()
@@ -198,17 +216,47 @@ class DQNAgent:
         optimizer.step()
         
         return loss.item()
+    
+    def _load_hyperparameters(self, path, key="house_env1"):
+        with open(path, "r") as f:
+            params = yaml.safe_load(f)
+        return params[key]
+
+    def _get_T_measurement(self, path):
+        df = pd.read_csv(path, index_col=False)
+        dt = int((datetime.strptime(df["Date"][1], "%Y-%m-%d %H:%M:%S") - datetime.strptime(df["Date"][0], "%Y-%m-%d %H:%M:%S")).total_seconds())
+        total_num_day = len(df) * dt // (3600 * 24)
+        step_per_day = 24*3600 // dt
+
+        start_time = df.iloc[0, 0]
+        rand_ind = np.random.rand(0, total_num_day, self.num_workers)     # select a subset of days among the total number of days
+
+        T_out_measurement = [[]]*self.num_workers
+
+        for i in rand_ind:
+            T_out_measurement[i] = list(df.iloc[i:i+step_per_day, 1])
+        
+        return T_out_measurement, dt, start_time
+        
+
+        
+
+
 
 if __name__ == "__main__":
+    num_workers = len(os.sched_getaffinity(0))
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     agent = DQNAgent(
         hidden_dim=128, 
         num_layers=2, 
         output_dim=5,
-        device=device
+        device=device,
+        data_path="data/clean/t_out.csv",
+        num_workers=num_workers
         )
 
-    # rewards = agent.run(is_training=True, render=False, epoches=100)
-    rewards = agent.run(is_training=False, render=True, epoches=1)
+    # rewards = agent.run(is_training=True, render=False, episodes=100)
+    # rewards = agent.run(is_training=False, render=True, episodes=1)
 
-    print(rewards)
+    # print(rewards)
