@@ -1,7 +1,4 @@
-data/clean/*
-data/raw/*
-*/__pycache__/*
-*.pyc
-*.pyo
-*.pyd
+/data/clean/
+/data/raw/
 .venv
+*/__pycache__/*
