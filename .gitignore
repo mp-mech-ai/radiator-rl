@@ -9,32 +9,9 @@ __pycache__/
 # Data files and directories
 data/clean/
 data/raw/
-*.csv
 !data/preproc.py
 
 # IDE-specific files
 .idea/
 .vscode/
-*.swp
-*.swo
 
-# Logs and databases
-*.log
-*.sqlite
-*.db
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Environment files
-.env
-.env.local
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# Build and distribution files
-build/
-dist/
-*.egg-info/

@@ -1,5 +1,5 @@
 [project]
-name = "radiator-rl"
+name = "radiator_rl"
 version = "0.1.0"
 description = "A RL project to control the radiator of a house"
 authors = [

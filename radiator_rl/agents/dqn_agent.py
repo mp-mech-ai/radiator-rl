@@ -1,9 +1,9 @@
 import torch
 import numpy as np
 import yaml
-from models.dqn import DQN
-from envs.replay_buffer import ReplayBuffer
-from envs.house_env import HouseEnv
+from radiator_rl.models.dqn import DQN
+from radiator_rl.envs.replay_buffer import ReplayBuffer
+from radiator_rl.envs.house_env import HouseEnv
 from collections import deque
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -76,30 +76,33 @@ class DQNAgent:
         
         radiator_factor = 2000 / self.output_dim  # Radiator power factor
         render_mode = "human" if render else None
-        
-        if self.num_workers == 1:
-            env = HouseEnv(
-                T_out_measurement=list(self.T_out_measurement), 
+
+        env = HouseEnv(
+                T_out_measurement=self.T_out_measurement[0], 
                 dt=self.dt,
                 start_time=self.start_time,
                 radiator_states=self.output_dim, 
                 radiator_factor=radiator_factor, 
                 render_mode=render_mode,
                 )
-        else:
-            envs = SyncVectorEnv(
-                lambda: HouseEnv(
-                    T_out_measurement=t, 
-                    dt=self.dt,
-                    start_time=self.start_time,
-                    radiator_states=self.output_dim, 
-                    radiator_factor=radiator_factor, 
-                    render_mode=render_mode,
-                    ) for t in self.T_out_measurement
-                )
+        print(env.action_space)
 
-        num_states = env.observation_space.shape[0]
-        num_actions = env.action_space.n
+        envs = SyncVectorEnv(
+            [lambda: HouseEnv(
+                T_out_measurement=t, 
+                dt=self.dt,
+                start_time=self.start_time,
+                radiator_states=self.output_dim, 
+                radiator_factor=radiator_factor, 
+                render_mode=render_mode,
+                ) for t in self.T_out_measurement],
+                observation_mode="same"
+            )
+        print(envs.action_space)
+        
+        num_states = envs.observation_space.shape[0]
+        num_actions = envs.action_space.n
+
 
         reward_per_episode = []
         if self.policy_dqn is None or self.target_dqn is None:
@@ -135,7 +138,7 @@ class DQNAgent:
         for episode in range(episodes):
             self.history.clear()
 
-            state, _ = env.reset()
+            state, _ = envs.reset()
             state = torch.tensor(state).to(self.device, dtype=torch.float32)
 
             self.history.append(state)
@@ -145,18 +148,18 @@ class DQNAgent:
 
             while not done:
                 if render:
-                    env.render()
+                    envs.render()
                 # Get current history as a tensor
                 history_tensor = self.get_history_tensor()
 
                 if is_training and np.random.rand() < epsilon:
-                    action = env.action_space.sample()
+                    action = envs.action_space.sample()
                 else:
                     with torch.no_grad():
                         q_values, _ = self.policy_dqn(torch.stack(list(self.history)).unsqueeze(0).to(self.device))
                         action = q_values.argmax().item()
 
-                next_state, reward, done, _, _ = env.step(action)
+                next_state, reward, done, _, _ = envs.step(action)
                 episode_reward += reward
 
                 next_state = torch.tensor(next_state).to(self.device, dtype=torch.float32)
@@ -190,7 +193,7 @@ class DQNAgent:
         if render:
             plt.ioff()
             plt.show()
-        env.close()
+        envs.close()
         return reward_per_episode
 
     def optimize_model(self, memory, optimizer):
@@ -239,19 +242,18 @@ class DQNAgent:
     def _get_T_measurement(self, path):
         df = pd.read_csv(path, index_col=False)
         dt = int((datetime.strptime(df["Date"][1], "%Y-%m-%d %H:%M:%S") - datetime.strptime(df["Date"][0], "%Y-%m-%d %H:%M:%S")).total_seconds())
-        total_num_day = len(df) * dt // (3600 * 24)
+        
         step_per_day = 24*3600 // dt
 
         start_time = df.iloc[0, 0]
-        rand_ind = np.random.rand(0, total_num_day, self.num_workers)     # select a subset of days among the total number of days
-
+        rand_ind = np.sort(np.random.choice(np.arange(0, len(df) - step_per_day), size=self.num_workers, replace=False))
+        
         T_out_measurement = [[]]*self.num_workers
 
-        for i in rand_ind:
-            T_out_measurement[i] = list(df.iloc[i:i+step_per_day, 1])
+        for i, ind in enumerate(rand_ind):
+            T_out_measurement[i] = list(df.iloc[ind:ind+step_per_day, 1])
         
         return T_out_measurement, dt, start_time
-        
 
 
 if __name__ == "__main__":
@@ -268,6 +270,6 @@ if __name__ == "__main__":
         )
 
     # rewards = agent.run(is_training=True, render=False, episodes=100)
-    rewards = agent.run(is_training=False, render=True, episodes=1)
+    rewards = agent.run(is_training=False, render=False, episodes=1)
 
     # print(rewards)

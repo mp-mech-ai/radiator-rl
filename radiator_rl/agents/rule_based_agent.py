@@ -1,5 +1,5 @@
 import numpy as np
-from src.envs.house_env import HouseEnv
+from radiator_rl.envs.house_env import HouseEnv
 import matplotlib.pyplot as plt
 
 class RuleBasedAgent:
