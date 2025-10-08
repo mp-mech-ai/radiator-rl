@@ -8,8 +8,9 @@ from collections import deque
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
-from gymnasium.vector import SyncVectorEnv
+from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 from datetime import datetime
+import time
 
 class DQNAgent:
     def __init__(
@@ -34,7 +35,7 @@ class DQNAgent:
         self.memory_size = hp["memory_size"]
         self.target_update_freq = hp["target_update_freq"]
         self.history_length = history_length
-        self.history = deque(maxlen=history_length)
+        self.histories = [deque(maxlen=history_length) for _ in range(num_workers)]
 
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
@@ -54,15 +55,18 @@ class DQNAgent:
         else:
             self.T_out_measurement, self.dt, self.start_time = self._get_T_measurement(data_path)
         
-    def get_history_tensor(self):
-        """Convert current history deque to a tensor, padding if necessary."""
-        history_list = list(self.history)
+        self.optimization_steps = 0
         
-        # If history is not full yet, pad with zeros at the beginning
+    
+    def _get_history_tensor_for_deque(self, history_deque):
+        """Convert a history deque to a tensor with padding if necessary."""
+        history_list = list(history_deque)
+        
+        # If history is not full yet, pad with the first observation
         if len(history_list) < self.history_length:
             state_dim = history_list[0].shape[0]
             padding_needed = self.history_length - len(history_list)
-            padding = [torch.ones(state_dim, device=self.device, dtype=torch.float32)*history_list[0] for _ in range(padding_needed)]
+            padding = [history_list[0].clone() for _ in range(padding_needed)]
             history_list = padding + history_list
         
         return torch.stack(history_list)
@@ -77,32 +81,33 @@ class DQNAgent:
         radiator_factor = 2000 / self.output_dim  # Radiator power factor
         render_mode = "human" if render else None
 
-        env = HouseEnv(
-                T_out_measurement=self.T_out_measurement[0], 
-                dt=self.dt,
-                start_time=self.start_time,
-                radiator_states=self.output_dim, 
-                radiator_factor=radiator_factor, 
-                render_mode=render_mode,
-                )
-        print(env.action_space)
-
-        envs = SyncVectorEnv(
-            [lambda: HouseEnv(
-                T_out_measurement=t, 
-                dt=self.dt,
-                start_time=self.start_time,
-                radiator_states=self.output_dim, 
-                radiator_factor=radiator_factor, 
-                render_mode=render_mode,
-                ) for t in self.T_out_measurement],
-                observation_mode="same"
+        # Parallelization
+        if self.num_workers > 1:
+            envs = AsyncVectorEnv(
+                [lambda t=t: HouseEnv(
+                    T_out_measurement=t, 
+                    dt=self.dt,
+                    start_time=self.start_time,
+                    radiator_states=self.output_dim, 
+                    radiator_factor=radiator_factor, 
+                    render_mode=None,
+                ) for t in self.T_out_measurement]
             )
-        print(envs.action_space)
+        # Not parallelized
+        else:
+            envs = SyncVectorEnv(
+                [lambda t=t: HouseEnv(
+                    T_out_measurement=t, 
+                    dt=self.dt,
+                    start_time=self.start_time,
+                    radiator_states=self.output_dim, 
+                    radiator_factor=radiator_factor, 
+                    render_mode=render_mode,
+                ) for t in self.T_out_measurement]
+            )
         
-        num_states = envs.observation_space.shape[0]
-        num_actions = envs.action_space.n
-
+        num_states = envs.observation_space.shape[1]
+        num_actions = envs.action_space.nvec[0]
 
         reward_per_episode = []
         if self.policy_dqn is None or self.target_dqn is None:
@@ -134,62 +139,89 @@ class DQNAgent:
             memory = ReplayBuffer(self.memory_size)
             epsilon = self.epsilon_start
         
-        # Need to add the parallelisation logic
         for episode in range(episodes):
-            self.history.clear()
-
-            state, _ = envs.reset()
-            state = torch.tensor(state).to(self.device, dtype=torch.float32)
-
-            self.history.append(state)
-
-            episode_reward = 0.0
-            done = False
-
-            while not done:
+            # Reset all environments
+            states, _ = envs.reset()  # Shape: (num_workers, state_dim)
+            states = torch.tensor(states, dtype=torch.float32).to(self.device)
+            
+            # Initialize history for each environment
+            histories = [deque(maxlen=self.history_length) for _ in range(self.num_workers)]
+            for i in range(self.num_workers):
+                histories[i].append(states[i])
+            
+            episode_rewards = np.zeros(self.num_workers)
+            dones = np.zeros(self.num_workers, dtype=bool)
+            
+            while not dones.all():
                 if render:
                     envs.render()
-                # Get current history as a tensor
-                history_tensor = self.get_history_tensor()
-
-                if is_training and np.random.rand() < epsilon:
-                    action = envs.action_space.sample()
-                else:
-                    with torch.no_grad():
-                        q_values, _ = self.policy_dqn(torch.stack(list(self.history)).unsqueeze(0).to(self.device))
-                        action = q_values.argmax().item()
-
-                next_state, reward, done, _, _ = envs.step(action)
-                episode_reward += reward
-
-                next_state = torch.tensor(next_state).to(self.device, dtype=torch.float32)
                 
-                self.history.append(next_state)
-                next_history_tensor = self.get_history_tensor()
+                # Select actions for each environment
+                actions = []
+                for i in range(self.num_workers):
+                    if not dones[i]:
+                        if is_training and np.random.rand() < epsilon:
+                            action = envs.single_action_space.sample()
+                        else:
+                            with torch.no_grad():
+                                history_tensor = self._get_history_tensor_for_deque(histories[i]).unsqueeze(0)
+                                q_values, _ = self.policy_dqn(history_tensor)
+                                action = q_values.argmax().item()
+                    else:
+                        action = 0  # Dummy action for finished environments
+                    actions.append(action)
+                
+                # Step all environments
+                next_states, rewards, dones_step, _, _ = envs.step(np.array(actions))
+                next_states = torch.tensor(next_states, dtype=torch.float32).to(self.device)
+                
+                # Process each environment's transition
+                for i in range(self.num_workers):
+                    if not dones[i]:
+                        # Get history tensors before updating
+                        history_tensor = self._get_history_tensor_for_deque(histories[i])
+                        # Update history with next state
+                        histories[i].append(next_states[i])
+                        next_history_tensor = self._get_history_tensor_for_deque(histories[i])
+                        
+                        # Accumulate reward
+                        episode_rewards[i] += rewards[i]
+                        
+                        # Store transition in replay buffer
+                        if is_training:
+                            memory.push(
+                                history_tensor.cpu().numpy(),
+                                actions[i],
+                                rewards[i],
+                                next_history_tensor.cpu().numpy(),
+                                dones_step[i]
+                            )
+                        
+                        # Mark as done if environment terminated
+                        if dones_step[i]:
+                            dones[i] = True
+                
+                # Optimize model if training
+                if is_training and len(memory) >= self.batch_size:
+                    self.optimize_model(memory, optimizer)
+                    self.optimization_steps += 1
 
+                    # Update target network periodically
+                    if is_training and self.optimization_steps % self.target_update_freq == 0:
+                        self.target_dqn.load_state_dict(self.policy_dqn.state_dict())
+                        # print(f"Target network updated at optimization step {self.optimization_steps} (Episode {episode})")
+                
+                # Decay epsilon
                 if is_training:
-                    memory.push(
-                        history_tensor.cpu().numpy(), 
-                        action, 
-                        reward, 
-                        next_history_tensor.cpu().numpy(), 
-                        done
-                    )
-
-                    if len(memory) >= self.batch_size:
-                        self.optimize_model(memory, optimizer)
                     epsilon = max(self.epsilon_end, epsilon * self.epsilon_decay)
-
-
-                state = next_state
             
-            reward_per_episode.append(episode_reward)
-            print(f"Episode: {episode} Reward: {episode_reward:.2f}")
+            # Log episode results (average across all environments)
+            avg_episode_reward = np.mean(episode_rewards)
+            reward_per_episode.append(avg_episode_reward)
+            print(f"Episode: {episode} Avg Reward: {avg_episode_reward:.2f} " 
+                f"(Min: {episode_rewards.min():.2f}, Max: {episode_rewards.max():.2f})")
+            
 
-            # Update target network periodically
-            if is_training and episode % self.target_update_freq == 0:
-                self.target_dqn.load_state_dict(self.policy_dqn.state_dict())
-                print(f"Target network updated.")
         if render:
             plt.ioff()
             plt.show()
@@ -248,18 +280,32 @@ class DQNAgent:
         start_time = df.iloc[0, 0]
         rand_ind = np.sort(np.random.choice(np.arange(0, len(df) - step_per_day), size=self.num_workers, replace=False))
         
-        T_out_measurement = [[]]*self.num_workers
+        T_out_measurement = []
 
         for i, ind in enumerate(rand_ind):
-            T_out_measurement[i] = list(df.iloc[ind:ind+step_per_day, 1])
+            T_out_measurement.append(list(df.iloc[ind:ind+step_per_day, 1]))
         
         return T_out_measurement, dt, start_time
 
 
 if __name__ == "__main__":
     num_workers = len(os.sched_getaffinity(0))
-
+    print(f"num_worker: {num_workers}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    t0 = time.time()
+    agent = DQNAgent(
+        hidden_dim=128, 
+        num_layers=2, 
+        output_dim=5,
+        device=device,
+        data_path="data/clean/t_out.csv",
+        num_workers=1
+        )
+    rewards = agent.run(is_training=True, render=False, episodes=10)
+    print(agent.optimization_steps)
+    print(f"---Not parallelized: {time.time() - t0:.2f}---")
+
+    t0 = time.time()
     agent = DQNAgent(
         hidden_dim=128, 
         num_layers=2, 
@@ -268,8 +314,7 @@ if __name__ == "__main__":
         data_path="data/clean/t_out.csv",
         num_workers=num_workers
         )
+    rewards = agent.run(is_training=True, render=False, episodes=10)
+    print(agent.optimization_steps)
+    print(f"---Parallelized: {time.time() - t0:.2f}---")
 
-    # rewards = agent.run(is_training=True, render=False, episodes=100)
-    rewards = agent.run(is_training=False, render=False, episodes=1)
-
-    # print(rewards)

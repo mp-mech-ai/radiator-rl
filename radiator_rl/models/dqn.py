@@ -16,8 +16,6 @@ class DQN(nn.Module):
             h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(x.device)
             c0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(x.device)
         
-        # print(x.shape, h0.shape, c0.shape)  # Debug: print the shape of the input tensor, hn and cn
-            
         out, (hn, cn) = self.lstm(x, (h0, c0))
         out = self.fc(out[:, -1, :])  # Prendre la sortie du dernier pas de temps
         return out, (hn, cn)
