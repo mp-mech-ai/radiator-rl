@@ -1,15 +1,16 @@
 import torch
 import numpy as np
 import yaml
-from replay_buffer import ReplayBuffer
-from dqn import DQN
-from house_env import HouseEnv
+from models.dqn import DQN
+from envs.replay_buffer import ReplayBuffer
+from envs.house_env import HouseEnv
 from collections import deque
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
 from gymnasium.vector import SyncVectorEnv
 from datetime import datetime
+
 class DQNAgent:
     def __init__(
         self,
@@ -17,7 +18,7 @@ class DQNAgent:
         num_layers,
         output_dim=5,           # Number of radiator states
         history_length=12,      # 12 time steps history (2 hours with dt=600s)
-        hyperparams_path="./src/hyperparameters.yml",
+        hyperparams_path="config/hyperparameters.yml",
         device="cpu",
         data_path=None,  
         num_workers=1
@@ -76,20 +77,32 @@ class DQNAgent:
         radiator_factor = 2000 / self.output_dim  # Radiator power factor
         render_mode = "human" if render else None
         
-        env = HouseEnv(
-            T_out_measurement=list(self.T_out_measurement), 
-            dt=self.dt,
-            start_time=self.start_time,
-            radiator_states=self.output_dim, 
-            radiator_factor=radiator_factor, 
-            render_mode=render_mode,
-            )
+        if self.num_workers == 1:
+            env = HouseEnv(
+                T_out_measurement=list(self.T_out_measurement), 
+                dt=self.dt,
+                start_time=self.start_time,
+                radiator_states=self.output_dim, 
+                radiator_factor=radiator_factor, 
+                render_mode=render_mode,
+                )
+        else:
+            envs = SyncVectorEnv(
+                lambda: HouseEnv(
+                    T_out_measurement=t, 
+                    dt=self.dt,
+                    start_time=self.start_time,
+                    radiator_states=self.output_dim, 
+                    radiator_factor=radiator_factor, 
+                    render_mode=render_mode,
+                    ) for t in self.T_out_measurement
+                )
 
         num_states = env.observation_space.shape[0]
         num_actions = env.action_space.n
 
         reward_per_episode = []
-        if is_training or self.policy_dqn is None or self.target_dqn is None:
+        if self.policy_dqn is None or self.target_dqn is None:
             # Initialize new networks
             self.policy_dqn = DQN(
                 state_dim=num_states, 
@@ -117,7 +130,8 @@ class DQNAgent:
         if is_training:
             memory = ReplayBuffer(self.memory_size)
             epsilon = self.epsilon_start
-
+        
+        # Need to add the parallelisation logic
         for episode in range(episodes):
             self.history.clear()
 
@@ -239,9 +253,6 @@ class DQNAgent:
         return T_out_measurement, dt, start_time
         
 
-        
-
-
 
 if __name__ == "__main__":
     num_workers = len(os.sched_getaffinity(0))
@@ -257,6 +268,6 @@ if __name__ == "__main__":
         )
 
     # rewards = agent.run(is_training=True, render=False, episodes=100)
-    # rewards = agent.run(is_training=False, render=True, episodes=1)
+    rewards = agent.run(is_training=False, render=True, episodes=1)
 
     # print(rewards)
