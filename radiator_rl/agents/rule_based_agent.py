@@ -1,15 +1,28 @@
 import numpy as np
 from radiator_rl.envs.house_env import HouseEnv
 import matplotlib.pyplot as plt
+import pandas as pd
+from datetime import datetime
 
 class RuleBasedAgent:
-    def __init__(self):
+    def __init__(self,
+                 data_path=None,
+                 seed=None
+                 ):
         self.dt = 600          # Time step in seconds (10 minutes)
         self.N_day = 3           # Number of days to simulate
         self.N = self.N_day*24*60*60 // self.dt       # Total number of time steps
-
-        self.T_out_measurement = 10 + 5*np.sin(-np.pi/2 + 2*np.pi*np.arange(self.N_day*24*3600//self.dt)/(24*3600//self.dt)) \
-            + np.random.randn(self.N_day*24*3600//self.dt)/5
+        
+        self.rng = np.random.default_rng(seed)
+        if not data_path:
+            N_day = 1                   # Number of days to simulate
+            self.dt = 600                    # Time step in seconds (10 minutes)
+            self.max_time_step = N_day*24*60*60 // self.dt       # Total number of time steps
+            self.T_out_measurement = 10 + 5*np.sin(-np.pi/2 + 2*np.pi*np.arange(N_day*24*3600//self.dt)/(24*3600//self.dt)) \
+                 + self.rng.standard_normal(N_day*24*3600//self.dt)/5
+            self.start_time = "2025-01-01 00:00:00"
+        else:
+            self.T_out_measurement, self.dt, self.start_time = self._get_T_measurement(data_path)
 
     def run(self):
         env = HouseEnv(
@@ -17,7 +30,6 @@ class RuleBasedAgent:
             dt=self.dt,
             render_mode="human", 
             window_size=24*60*60//self.dt,
-            owner_schedule=[(72, 108)]
             )
 
         # Reset the environment
@@ -48,8 +60,20 @@ class RuleBasedAgent:
         plt.ioff()
         plt.show()
         env.close()
+    
+    def _get_T_measurement(self, path):
+        df = pd.read_csv(path, index_col=False)
+        dt = int((datetime.strptime(df["Date"][1], "%Y-%m-%d %H:%M:%S") - datetime.strptime(df["Date"][0], "%Y-%m-%d %H:%M:%S")).total_seconds())
+        
+        step_per_day = 24*3600 // dt
 
+        start_time = df.iloc[0, 0]
+        rand_ind = np.sort(np.random.choice(np.arange(0, len(df) - step_per_day), size=self.num_workers, replace=False))
+        
+        T_out_measurement = []
 
-if __name__ == "__main__":
-    agent = RuleBasedAgent()
-    agent.run()
+        for i, ind in enumerate(rand_ind):
+            T_out_measurement.append(list(df.iloc[ind:ind+step_per_day, 1]))
+        
+        return T_out_measurement, dt, start_time
+

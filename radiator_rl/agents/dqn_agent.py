@@ -20,7 +20,8 @@ class DQNAgent:
         hyperparams_path="config/hyperparameters.yml",
         device="cpu",
         data_path=None,  
-        num_workers=1
+        num_workers=1,
+        seed=None
     ):
         hp = self._load_hyperparameters(hyperparams_path)
         self.device = device
@@ -43,12 +44,14 @@ class DQNAgent:
         self.target_dqn = None
 
         self.num_workers = num_workers
+        self.rng = np.random.default_rng(seed)
+
         if not data_path:
             N_day = 1                   # Number of days to simulate
             self.dt = 600                    # Time step in seconds (10 minutes)
             self.max_time_step = N_day*24*60*60 // self.dt       # Total number of time steps
             self.T_out_measurement = 10 + 5*np.sin(-np.pi/2 + 2*np.pi*np.arange(N_day*24*3600//self.dt)/(24*3600//self.dt)) \
-                 + np.random.randn(N_day*24*3600//self.dt)/5
+                 + self.rng.standard_normal(N_day*24*3600//self.dt)/5
             self.start_time = "2025-01-01 00:00:00"
         else:
             self.T_out_measurement, self.dt, self.start_time = self._get_T_measurement(data_path)
@@ -170,7 +173,7 @@ class DQNAgent:
                     actions.append(action)
                 
                 # Step all environments
-                next_states, rewards, dones_step, _, _ = envs.step(np.array(actions))
+                next_states, rewards, dones_step, _, info = envs.step(np.array(actions))
                 next_states = torch.tensor(next_states, dtype=torch.float32).to(self.device)
                 
                 # Process each environment's transition

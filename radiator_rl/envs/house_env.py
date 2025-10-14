@@ -20,9 +20,12 @@ class HouseEnv(gym.Env):
             radiator_states: int = 2,           # Number of radiator power levels (0: off, 1: level 1, 2: level 2, etc.)
             radiator_factor: float = 2000,      # Radiator factor [W], level 1 corresponds to 2000W, level 2 to 4000W, etc.
             eta: float = 0.9,                   # Efficiency of the heating system 
-            owner_schedule: list[int] = [(0, 36), (108, 144)],  # Time stamps (in dt steps) when owners come back home (e.g., 36 for 6am, 108 for 18pm with dt=600s)
+            owner_schedule: list[tuple] = [(0, 36), (108, 144)],  # Time stamps (in dt steps) when owners come back home (e.g., 36 for 6am, 108 for 18pm with dt=600s)
+            off_peak_schedule: list[tuple] = [(0, 36), (132, 144)], # Time stamps (in dt steps) when off-peak hours occurs (20% off to the price)
+            kWh_price: float = 0.20,
             render_mode = None,                 # "human" for rendering, None for no rendering
-            window_size = None                  # time Window size for rendering
+            window_size = None,                  # time Window size for rendering
+            seed=None
             ):
         
         super().__init__()
@@ -39,8 +42,11 @@ class HouseEnv(gym.Env):
         self.time_manager = TimeManager(
             dt=dt, 
             owner_schedule=owner_schedule,
+            off_peak_schedule=off_peak_schedule,
             start_time=start_time
             )
+        
+        self.kWh_price = kWh_price
 
         self.render_mode = render_mode
 
@@ -63,12 +69,13 @@ class HouseEnv(gym.Env):
             ), dtype=np.float32
         )
         self.observation_space = Box(low=low, high=high, seed=42)
+        self.rng = np.random.default_rng(seed)
 
         # Initial conditions
         if T_in_initial is None and self.time_manager._is_owner_present():
-            self.T_in_initial = 21.0  # Initial internal temperature [C]
+            self.T_in_initial = 21.0 + (2*self.rng.standard_normal() - 1) # Initial internal temperature [C]
         elif T_in_initial is None and not self.time_manager._is_owner_present():
-            self.T_in_initial = T_out_measurement[0]  # Initial internal temperature [C]
+            self.T_in_initial = T_out_measurement[0] + (2*self.rng.standard_normal() - 1)  # Initial internal temperature [C]
         else:
             self.T_in_initial = T_in_initial  # Initial internal temperature [C]
         self.T_in = self.T_in_initial  # Current internal temperature [C]
@@ -148,13 +155,18 @@ class HouseEnv(gym.Env):
             [self.time_manager.current_step]
         ))
 
-        # Calculate reward
+        # ----------- Reward calculation -----------------
         if self.time_manager.time_before_owners_come_back == 0:
             temperature_reward = - max(0, abs(self.T_in - 21) - 1)  # Penalize deviation from 21 C beyond a tolerance of 1 C
         else:
             temperature_reward = 0  # No penalty when owners are not home
         
-        energy_penalty = - radiator_energy_consumption * self.lambda_energy  # Penalize energy consumption
+        if not self.time_manager.is_off_peak():
+            energy_price_reward = -self.kWh_price * radiator_energy_consumption
+        else:
+            energy_price_reward = -0.8 * self.kWh_price * radiator_energy_consumption
+        
+        energy_penalty = energy_price_reward * self.lambda_energy  # Penalize energy consumption
 
         reward = temperature_reward + energy_penalty
 
@@ -163,7 +175,13 @@ class HouseEnv(gym.Env):
         if terminated:
             self.time_manager.reset()  # Reset time manager for next episode
         truncated = False
-        info = {"energy_consumed": radiator_energy_consumption}
+
+        info = {
+            "T_in": self.T_in,
+            "T_out": self.T_out,
+            "energy_consumed": radiator_energy_consumption, 
+            "energy_price": energy_price_reward
+        }
 
         if self.render_mode == "human" and not terminated:
             self.time_history.append(self.time_manager.current_step)
@@ -256,6 +274,7 @@ class TimeManager():
     def __init__(self,
                  dt,
                  owner_schedule=[(0, 36), (108, 144)],
+                 off_peak_schedule=[(0, 36), (132, 144)],
                  start_time="2025-01-01 00:00:00"
                  ):
         """
@@ -267,6 +286,7 @@ class TimeManager():
         """
         self.dt = timedelta(seconds=dt)
         self.owner_schedule = owner_schedule
+        self.off_peak_schedule = off_peak_schedule
         self.start_time = start_time
         self.current_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         self.current_step = 0
@@ -275,6 +295,14 @@ class TimeManager():
         # Calculate the number of time steps per day
         self.steps_per_day = int(timedelta(days=1).total_seconds() // self.dt.total_seconds())
 
+    def is_off_peak(self):
+        """Returns True if the current time step is within an off-peak period."""
+        current_step_in_day = self.current_step % self.steps_per_day
+        for start, end in self.off_peak_schedule:
+            if start <= current_step_in_day < end:
+                return True
+        return False
+    
     def _is_owner_present(self):
         """Returns True if the current time step is within an owner presence period."""
         current_step_in_day = self.current_step % self.steps_per_day

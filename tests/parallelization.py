@@ -2,6 +2,7 @@ import os
 import time
 from radiator_rl.agents.dqn_agent import DQNAgent
 import torch
+
 """
 Parallelization is only effective if the episode duration is long or if the calculation of each
 steps are costly. If on of those conditions aren't met you should consider training sequentially.
@@ -9,6 +10,7 @@ steps are costly. If on of those conditions aren't met you should consider train
 In all case, it is recommended to time a single episode with 1 worker and N worker and see if 
 it is efficient.
 """
+
 num_workers = len(os.sched_getaffinity(0))
 print(f"num_worker: {num_workers}")
 device = "cuda" if torch.cuda.is_available() else "cpu"
