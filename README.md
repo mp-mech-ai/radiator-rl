@@ -23,9 +23,9 @@ $$
 
 - Current indoor temperature
 - Outdoor temperature
+- Radiator state
+- Occupant presence
 - Time of day (for pricing)
-- Occupant presence (binary or range)
-- Electricity price (real-time or averaged)
 
 ### Action Space
 
