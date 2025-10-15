@@ -8,7 +8,9 @@ This project implements a Reinforcement Learning (RL) approach to control a buil
 
 - **Simulated Environment**: Custom linear physical model (conductance + capacity) for building thermal dynamics.
 
-$$ C \frac{\partial T*{in}}{\partial t} = G (T*{out} - T*{in}) + P*{radiator}$$
+$$
+ C \frac{\partial T_{in}}{\partial t} = G (T_{out} - T_{in}) + P_{radiator}
+$$
 
 - **RL Agents**: Rule-based baseline and a DQN (Deep Q-Network) implemented in PyTorch.
 - **Discrete Action Space**: Radiator power levels.
