@@ -7,6 +7,9 @@ This project implements a Reinforcement Learning (RL) approach to control a buil
 ## 2. Key Features
 
 - **Simulated Environment**: Custom linear physical model (conductance + capacity) for building thermal dynamics.
+
+# $$ C \frac{\partial T*{in}}{\partial t} = G (T*{out} - T*{in}) + P*{radiator}$$
+
 - **RL Agents**: Rule-based baseline and a DQN (Deep Q-Network) implemented in PyTorch.
 - **Discrete Action Space**: Radiator power levels.
 - **Reward Function**: Weighted sum of electricity cost and comfort (temperature deviation).
@@ -75,7 +78,7 @@ This project implements a Reinforcement Learning (RL) approach to control a buil
 
 1. Clone the repository:
    ```
-   git clone [your-repo-link]
+   git clone https://github.com/mp-mech-ai/radiator-rl
    ```
 2. Install dependencies:
    ```
@@ -87,14 +90,7 @@ This project implements a Reinforcement Learning (RL) approach to control a buil
 
 - Run the DQN training script:
   ```
-  python train.py --config config/dqn.yaml
-  ```
-
-### Testing
-
-- Evaluate the trained agent:
-  ```
-  python evaluate.py --model_path models/dqn.pth
+  python dqn_training.py
   ```
 
 ## 8. Challenges & Limitations

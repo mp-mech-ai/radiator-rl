@@ -47,27 +47,32 @@ class HouseEnv(gym.Env):
             )
         
         self.kWh_price = kWh_price
-
         self.render_mode = render_mode
+
+        # Normalization constants
+        self.T_mean = 10.0
+        self.T_std = 15.0
 
         # Action space: Radiator levels
         self.action_space = Discrete(len(self.radiator_states))
 
-        # Observation space
-        low = np.concatenate((
-            [-10.]*2,       # T_in and T_out
-            [0.],           # radiator state
-            [0.],           # time step before owners are at home
-            [0.]            # time step of the day
-            ), dtype=np.float32
-        )
-        high = np.concatenate((
-            [40]*2,                 # T_in and T_out
-            [self.action_space.n],  # radiator state
-            [self.time_manager.steps_per_day],                  # time step before owners are at home
-            [self.time_manager.steps_per_day]                   # time step of the day
-            ), dtype=np.float32
-        )
+        # Observation space - normalized
+        low = np.array([
+            -2.0,  # T_in normalized
+            -2.0,  # T_out normalized
+            0.0,   # radiator state normalized
+            0.0,   # time before owners normalized
+            0.0    # time of day normalized
+        ], dtype=np.float32)
+        
+        high = np.array([
+            2.0,   # T_in normalized
+            2.0,   # T_out normalized
+            1.0,   # radiator state normalized
+            1.0,   # time before owners normalized
+            1.0    # time of day normalized
+        ], dtype=np.float32)
+    
         self.observation_space = Box(low=low, high=high, seed=42)
         self.rng = np.random.default_rng(seed)
 
@@ -122,7 +127,35 @@ class HouseEnv(gym.Env):
             plt.ion()
             self.fig.show()
             self.fig.canvas.draw()
+
+    def _normalize_observation(self, T_in, T_out, radiator_state, time_before, step_of_day):
+        """Normalize observations to help with learning."""
+        return np.array([
+            (T_in - self.T_mean) / self.T_std,
+            (T_out - self.T_mean) / self.T_std,
+            radiator_state / max(1, (self.action_space.n - 1)),
+            time_before / self.time_manager.steps_per_day,
+            step_of_day / self.time_manager.steps_per_day
+        ], dtype=np.float32)
     
+    def _unnormalize_observation(self, normalized_obs):
+        """Convert normalized observations back to original scale.
+        
+        Args:
+            normalized_obs: Normalized observation array of shape (5,)
+        
+        Returns:
+            Dictionary with unnormalized values
+        """
+        return np.array([
+            normalized_obs[0] * self.T_std + self.T_mean,
+            normalized_obs[1] * self.T_std + self.T_mean,
+            int(normalized_obs[2] * (self.action_space.n - 1)),
+            int(normalized_obs[3] * self.time_manager.steps_per_day),
+            int(normalized_obs[4] * self.time_manager.steps_per_day)
+        ])
+
+
     def step(self, 
             action: int
             ):
@@ -140,20 +173,18 @@ class HouseEnv(gym.Env):
         new_T_in = self.T_in + dT_in_dt * self.time_manager.dt.total_seconds()
         self.T_in = new_T_in
 
-        # Update time manager
+        # Update time 
         self.time_manager.step()
-
-        # Update time-related variables
         self.T_out = self.T_out_measurement[self.time_manager.current_step]
         
-        # Construct the initial observation
-        observation = np.concatenate((
-            [self.T_in],  # Last 12 T_in values (2h history)
-            [self.T_out], # Last 12 T_out values (2h history)
-            [self.radiator_state],
-            [self.time_manager.time_before_owners_come_back],
-            [self.time_manager.current_step]
-        ))
+        # Normalized observation
+        observation = self._normalize_observation(
+            self.T_in,
+            self.T_out,
+            self.radiator_state,
+            self.time_manager.time_before_owners_come_back,
+            self.time_manager.current_step
+        )
 
         # ----------- Reward calculation -----------------
         if self.time_manager.time_before_owners_come_back == 0:
@@ -162,11 +193,11 @@ class HouseEnv(gym.Env):
             temperature_reward = 0  # No penalty when owners are not home
         
         if not self.time_manager.is_off_peak():
-            energy_price_reward = -self.kWh_price * radiator_energy_consumption
+            energy_cost_reward = -self.kWh_price * radiator_energy_consumption
         else:
-            energy_price_reward = -0.8 * self.kWh_price * radiator_energy_consumption
+            energy_cost_reward = -0.8 * self.kWh_price * radiator_energy_consumption
         
-        energy_penalty = energy_price_reward * self.lambda_energy  # Penalize energy consumption
+        energy_penalty = energy_cost_reward * self.lambda_energy  # Penalize energy consumption
 
         reward = temperature_reward + energy_penalty
 
@@ -177,10 +208,12 @@ class HouseEnv(gym.Env):
         truncated = False
 
         info = {
+            "current_step": self.time_manager.current_step,
             "T_in": self.T_in,
             "T_out": self.T_out,
             "energy_consumed": radiator_energy_consumption, 
-            "energy_price": energy_price_reward
+            "energy_cost": -energy_cost_reward,
+            "reward": reward
         }
 
         if self.render_mode == "human" and not terminated:
@@ -228,14 +261,14 @@ class HouseEnv(gym.Env):
             self.T_out_history = deque([self.T_out_measurement[0]]*self.window_size, maxlen=self.window_size)  # T_out history for plotting
             self.energy_consumption_history = deque([0.]*self.window_size, maxlen=self.window_size)  # Energy consumption history for plotting
         
-        # Construct the initial observation
-        observation = np.concatenate((
-            [self.T_in],  # Last 12 T_in values (2h history)
-            [self.T_out], # Last 12 T_out values (2h history)
-            [self.radiator_state],
-            [self.time_manager.time_before_owners_come_back],
-            [self.time_manager.current_step]
-        ))
+        # Normalized observation
+        observation = self._normalize_observation(
+            self.T_in,
+            self.T_out,
+            self.radiator_state,
+            self.time_manager.time_before_owners_come_back,
+            self.time_manager.current_step
+        )
 
         return observation, {}
     
