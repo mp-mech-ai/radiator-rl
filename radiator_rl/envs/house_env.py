@@ -22,9 +22,9 @@ class HouseEnv(gym.Env):
             eta: float = 0.9,                   # Efficiency of the heating system 
             owner_schedule: list[tuple] = [(0, 36), (108, 144)],  # Time stamps (in dt steps) when owners come back home (e.g., 36 for 6am, 108 for 18pm with dt=600s)
             off_peak_schedule: list[tuple] = [(0, 36), (132, 144)], # Time stamps (in dt steps) when off-peak hours occurs (20% off to the price)
-            kWh_price: float = 0.20,
+            kWh_price: float = 0.31,            # 31 Rp/kWh in Vaud: https://visualize.admin.ch/fr/v/qSyFtzDvZlmL?dataSource=Prod
             render_mode = None,                 # "human" for rendering, None for no rendering
-            window_size = None,                  # time Window size for rendering
+            window_size = None,                 # time Window size for rendering
             seed=None
             ):
         
@@ -37,7 +37,7 @@ class HouseEnv(gym.Env):
         self.radiator_factor = radiator_factor  # Radiator factor [W]
         self.radiator_powers = [i * radiator_factor for i in self.radiator_states]  # Radiator power levels
         self.eta = eta  # Efficiency of the heating system
-        self.lambda_energy = 0.5  # Weight factor for energy consumption in the reward function
+        self.lambda_energy = 1.5  # Weight factor for energy consumption in the reward function
 
         self.time_manager = TimeManager(
             dt=dt, 

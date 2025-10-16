@@ -10,10 +10,11 @@ DATA_INDEX = 2
 # Rule-based agent
 rule_based = RuleBasedAgent(
     render=False,
+    smartness=1,
     data_path="data/clean/t_out.csv",
     seed=42
 )
-infos_rb = rule_based.run(data_index=DATA_INDEX, verbose=True)
+infos_rb = rule_based.run(data_index=DATA_INDEX, verbose=False)
 infos_rb = infos_rb[:-1]
 
 model1_data = {
@@ -37,7 +38,7 @@ dqn = DQNAgent(
     seed=42
 )
 
-dqn.load("radiator_rl/models/dqn_1000_normalized.pt")
+dqn.load("radiator_rl/models/dqn_2000_rewardtweaked.pt")
 
 # Run
 infos_dqn = dqn.run(render=False, episodes=1, data_index=DATA_INDEX, verbose=False)
@@ -90,7 +91,7 @@ print(f"Average Daily Reward:")
 print(f"  Rule-Based: {total_rb_reward/num_day_eval:.4f}")
 print(f"  DQN:        {total_dqn_reward/num_day_eval:.4f}")
 print(f"  Improvement: {((total_dqn_reward - total_rb_reward)/abs(total_rb_reward))*100:.2f}%")
-print(f"\nAverage Daily Cost (€):")
+print(f"\nAverage Daily Cost (CHF):")
 print(f"  Rule-Based: {total_rb_cost/num_day_eval:.4f}")
 print(f"  DQN:        {total_dqn_cost/num_day_eval:.4f}")
 print(f"  Savings:    {((total_rb_cost - total_dqn_cost)/total_rb_cost)*100:.2f}%")

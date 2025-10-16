@@ -3,6 +3,7 @@ import torch
 
 # Check if cuda is available
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print(device)
 
 # Training workflow
 agent = DQNAgent(
@@ -15,9 +16,11 @@ agent = DQNAgent(
     seed=42
     )
 
-metrics = agent.train(episodes=1000)
-agent.save("radiator_rl/models/dqn_1000_normalized.pt")
+number_of_episodes = 2000
+
+metrics = agent.train(episodes=number_of_episodes)
+agent.save(f"radiator_rl/models/dqn_{number_of_episodes}_rewardtweaked.pt")
 
 # Evaluation workflow
-agent.load("radiator_rl/models/dqn_1000_normalized.pt")
+agent.load(f"radiator_rl/models/dqn_{number_of_episodes}_rewardtweaked.pt")
 results = agent.run(episodes=1, render=True, data_index=50)

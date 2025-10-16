@@ -8,11 +8,12 @@ from radiator_rl.utils import get_T_measurement
 class RuleBasedAgent:
     def __init__(self,
                  render=False,
+                 smartness=0,
                  data_path=None,
                  seed=None
                  ):
         self.render = render
-
+        self.smartness = smartness
         self.dt = 600          # Time step in seconds (10 minutes)
         self.N_day = 3           # Number of days to simulate
         self.N = self.N_day*24*60*60 // self.dt       # Total number of time steps
@@ -52,13 +53,27 @@ class RuleBasedAgent:
         while not terminated:
             observation = env._unnormalize_observation(observation)
             T_in = observation[0]  # Current indoor temperature
-            
-            if T_in < 20.5:
-                action = 1  # Turn radiator on
-            elif T_in > 21.5:
-                action = 0  # Turn radiator off
-            else:
-                action = env.radiator_state  # Keep current state
+            time_before_owners_come_back = observation[3]
+
+            if self.smartness == 0:
+                if T_in < 20.5:
+                    action = 1  # Turn radiator on
+                elif T_in > 21.5:
+                    action = 0  # Turn radiator off
+                else:
+                    action = env.radiator_state  # Keep current state
+            elif self.smartness == 1:
+                # Of owners come back in less than two hours
+                if time_before_owners_come_back < 2*(60*60//self.dt):
+                    if T_in < 20.5:
+                        action = 1  # Turn radiator on
+                    elif T_in > 21.5:
+                        action = 0  # Turn radiator off
+                    else:
+                        action = env.radiator_state  # Keep current state
+                else:
+                    action = 0
+
 
             # Step the environment
             observation, reward, terminated, truncated, info = env.step(action)
