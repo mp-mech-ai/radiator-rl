@@ -29,7 +29,7 @@ def plot_model(
     # Compute cumulative values
     energy_cumsum = np.cumsum(model_data['energy_consumed'])
     cost_cumsum = np.cumsum(model_data['energy_cost'])
-    reward_cumsum = np.cumsum(model_data['reward'])
+    reward_cumsum = np.cumsum(model_data['temperature_reward'])
     
     # Create figure with better spacing
     fig = plt.figure(figsize=(16, 10))
@@ -174,8 +174,8 @@ def compare_models(
     energy2_cumsum = np.cumsum(model2_data['energy_consumed'])
     cost1_cumsum = np.cumsum(model1_data['energy_cost'])
     cost2_cumsum = np.cumsum(model2_data['energy_cost'])
-    reward1_cumsum = np.cumsum(model1_data['reward'])
-    reward2_cumsum = np.cumsum(model2_data['reward'])
+    reward1_cumsum = np.cumsum(model1_data['temperature_reward'])
+    reward2_cumsum = np.cumsum(model2_data['temperature_reward'])
     
     # Create figure with better spacing
     fig = plt.figure(figsize=(16, 10))
@@ -308,6 +308,10 @@ def compare_models(
 def get_T_measurement(path, num_workers, data_index=None):
     """Load temperature measurements from CSV file."""
     df = pd.read_csv(path, index_col=False)
+    df["Month"] = pd.to_datetime(df["Date"]).dt.month
+    
+    # Select form October to March only
+    df = df[(df["Month"] >= 10) | (df["Month"] <= 3)]
     dt = int((datetime.strptime(df["Date"][1], "%Y-%m-%d %H:%M:%S") - 
                 datetime.strptime(df["Date"][0], "%Y-%m-%d %H:%M:%S")).total_seconds())
     

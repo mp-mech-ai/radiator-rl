@@ -6,7 +6,7 @@ from gymnasium.spaces import Discrete, Box
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
-from datetime import datetime, timedelta
+from radiator_rl.envs.time_manager import TimeManager
 
 class HouseEnv(gym.Env):
     def __init__(
@@ -37,7 +37,7 @@ class HouseEnv(gym.Env):
         self.radiator_factor = radiator_factor  # Radiator factor [W]
         self.radiator_powers = [i * radiator_factor for i in self.radiator_states]  # Radiator power levels
         self.eta = eta  # Efficiency of the heating system
-        self.lambda_energy = 1.5  # Weight factor for energy consumption in the reward function
+        self.lambda_energy = 0.5  # Weight factor for energy consumption in the reward function
 
         self.time_manager = TimeManager(
             dt=dt, 
@@ -62,6 +62,7 @@ class HouseEnv(gym.Env):
             -2.0,  # T_out normalized
             0.0,   # radiator state normalized
             0.0,   # time before owners normalized
+            0.0,   # time before off-peak normalized
             0.0    # time of day normalized
         ], dtype=np.float32)
         
@@ -70,6 +71,7 @@ class HouseEnv(gym.Env):
             2.0,   # T_out normalized
             1.0,   # radiator state normalized
             1.0,   # time before owners normalized
+            1.0,   # time before off-peak normalized
             1.0    # time of day normalized
         ], dtype=np.float32)
     
@@ -128,13 +130,14 @@ class HouseEnv(gym.Env):
             self.fig.show()
             self.fig.canvas.draw()
 
-    def _normalize_observation(self, T_in, T_out, radiator_state, time_before, step_of_day):
+    def _normalize_observation(self, T_in, T_out, radiator_state, time_before_owners, time_before_off_peak, step_of_day):
         """Normalize observations to help with learning."""
         return np.array([
             (T_in - self.T_mean) / self.T_std,
             (T_out - self.T_mean) / self.T_std,
             radiator_state / max(1, (self.action_space.n - 1)),
-            time_before / self.time_manager.steps_per_day,
+            time_before_owners / self.time_manager.steps_per_day,
+            time_before_off_peak / self.time_manager.steps_per_day,
             step_of_day / self.time_manager.steps_per_day
         ], dtype=np.float32)
     
@@ -152,7 +155,8 @@ class HouseEnv(gym.Env):
             normalized_obs[1] * self.T_std + self.T_mean,
             int(normalized_obs[2] * (self.action_space.n - 1)),
             int(normalized_obs[3] * self.time_manager.steps_per_day),
-            int(normalized_obs[4] * self.time_manager.steps_per_day)
+            int(normalized_obs[4] * self.time_manager.steps_per_day),
+            int(normalized_obs[5] * self.time_manager.steps_per_day)
         ])
 
 
@@ -183,23 +187,27 @@ class HouseEnv(gym.Env):
             self.T_out,
             self.radiator_state,
             self.time_manager.time_before_owners_come_back,
+            self.time_manager.time_before_off_peak,
             self.time_manager.current_step
         )
-
-        # ----------- Reward calculation -----------------
+        # ================================================
+        # =========== Reward calculation =================
+        # ================================================
+        # Comfort reward
         if self.time_manager.time_before_owners_come_back == 0:
             temperature_reward = - max(0, abs(self.T_in - 21) - 1)  # Penalize deviation from 21 C beyond a tolerance of 1 C
         else:
             temperature_reward = 0  # No penalty when owners are not home
-        
-        if not self.time_manager.is_off_peak():
+
+        # Energy reward
+        if not self.time_manager._is_off_peak():
             energy_cost_reward = -self.kWh_price * radiator_energy_consumption
         else:
             energy_cost_reward = -0.8 * self.kWh_price * radiator_energy_consumption
+        energy_reward = energy_cost_reward * self.lambda_energy  # Penalize energy consumption
         
-        energy_penalty = energy_cost_reward * self.lambda_energy  # Penalize energy consumption
-
-        reward = temperature_reward + energy_penalty
+        # Total reward
+        reward = temperature_reward + energy_reward
 
         # Check if episode is done
         terminated = self.time_manager.current_step >= self.max_time
@@ -213,7 +221,9 @@ class HouseEnv(gym.Env):
             "T_out": self.T_out,
             "energy_consumed": radiator_energy_consumption, 
             "energy_cost": -energy_cost_reward,
-            "reward": reward
+            "temperature_reward": temperature_reward,
+            "energy_reward": energy_reward,
+            "total_reward": reward
         }
 
         if self.render_mode == "human" and not terminated:
@@ -267,6 +277,7 @@ class HouseEnv(gym.Env):
             self.T_out,
             self.radiator_state,
             self.time_manager.time_before_owners_come_back,
+            self.time_manager.time_before_off_peak,
             self.time_manager.current_step
         )
 
@@ -303,87 +314,3 @@ class HouseEnv(gym.Env):
                                     label='Owner Present' if not self.owner_presence_patches else '')
             self.owner_presence_patches.append(patch)
 
-class TimeManager():
-    def __init__(self,
-                 dt,
-                 owner_schedule=[(0, 36), (108, 144)],
-                 off_peak_schedule=[(0, 36), (132, 144)],
-                 start_time="2025-01-01 00:00:00"
-                 ):
-        """
-        Manages the simulation time and owner presence schedule. Everythin is in time steps of dt seconds.
-        Args:
-            dt (int): Time step in seconds.
-            owner_schedule (list of tuples): List of (start, end) time steps when owners are present.
-            start_time (str): Start time in "YYYY-MM-DD HH:MM:SS" format.
-        """
-        self.dt = timedelta(seconds=dt)
-        self.owner_schedule = owner_schedule
-        self.off_peak_schedule = off_peak_schedule
-        self.start_time = start_time
-        self.current_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
-        self.current_step = 0
-        self.time_before_owners_come_back = self.owner_schedule[0][0]  # Initial time before owners come back (in time steps)
-
-        # Calculate the number of time steps per day
-        self.steps_per_day = int(timedelta(days=1).total_seconds() // self.dt.total_seconds())
-
-    def is_off_peak(self):
-        """Returns True if the current time step is within an off-peak period."""
-        current_step_in_day = self.current_step % self.steps_per_day
-        for start, end in self.off_peak_schedule:
-            if start <= current_step_in_day < end:
-                return True
-        return False
-    
-    def _is_owner_present(self):
-        """Returns True if the current time step is within an owner presence period."""
-        current_step_in_day = self.current_step % self.steps_per_day
-        for start, end in self.owner_schedule:
-            if start <= current_step_in_day < end:
-                return True
-        return False
-
-    def _update_time_before_return(self):
-        """Updates time_before_owners_come_back based on the current position."""
-        current_step_in_day = self.current_step % self.steps_per_day
-
-        if self._is_owner_present():
-            self.time_before_owners_come_back = 0
-        else:
-            # Find the next presence period
-            next_start = None
-            for start, end in self.owner_schedule:
-                if current_step_in_day < start:
-                    next_start = start
-                    break
-            if next_start is not None:
-                self.time_before_owners_come_back = next_start - current_step_in_day
-            else:
-                # If we are past all periods, wait for the first period the next day
-                self.time_before_owners_come_back = self.steps_per_day - current_step_in_day + self.owner_schedule[0][0]
-
-    def step(self):
-        self.current_time += self.dt
-        self.current_step += 1
-        self._update_time_before_return()
-
-    def reset(self):
-        self.current_time = datetime.strptime(self.start_time, "%Y-%m-%d %H:%M:%S")
-        self.current_step = 0
-        self.time_before_owners_come_back = self.owner_schedule[0][0]
-        
-    @property
-    def hour_of_day(self):
-        return self.current_time.hour
-
-    @property
-    def weekday(self):
-        return self.current_time.weekday()
-
-
-if __name__ == "__main__":
-    timemanager = TimeManager(dt=600, owner_schedule=[(10,36), (108, 144)], start_time="2025-01-01 00:00:00")
-    for _ in range(150):
-        print(f"Time: {timemanager.current_time}, Hour: {timemanager.hour_of_day}, Weekday: {timemanager.weekday}, Time before owners come back: {timemanager.time_before_owners_come_back} steps")
-        timemanager.step()

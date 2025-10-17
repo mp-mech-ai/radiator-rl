@@ -16,11 +16,11 @@ agent = DQNAgent(
     seed=42
     )
 
-number_of_episodes = 2000
+number_of_episodes = 1000
 
 metrics = agent.train(episodes=number_of_episodes)
-agent.save(f"radiator_rl/models/dqn_{number_of_episodes}_rewardtweaked.pt")
+agent.save(f"radiator_rl/models/dqn_{number_of_episodes}_winter_only.pt")
 
 # Evaluation workflow
-agent.load(f"radiator_rl/models/dqn_{number_of_episodes}_rewardtweaked.pt")
+agent.load(f"radiator_rl/models/dqn_{number_of_episodes}_winter_only.pt")
 results = agent.run(episodes=1, render=True, data_index=50)

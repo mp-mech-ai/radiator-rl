@@ -23,7 +23,8 @@ model1_data = {
     'T_out': [f["T_out"] for f in infos_rb],
     'energy_consumed': [f["energy_consumed"] for f in infos_rb],
     'energy_cost': [f["energy_cost"] for f in infos_rb],
-    'reward': [f["reward"] for f in infos_rb]
+    'temperature_reward': [f["temperature_reward"] for f in infos_rb],
+    'reward': [f["total_reward"] for f in infos_rb]
 }
 
 # DQN agent
@@ -38,7 +39,7 @@ dqn = DQNAgent(
     seed=42
 )
 
-dqn.load("radiator_rl/models/dqn_2000_rewardtweaked.pt")
+dqn.load("radiator_rl/models/dqn_1000_winter_only.pt")
 
 # Run
 infos_dqn = dqn.run(render=False, episodes=1, data_index=DATA_INDEX, verbose=False)
@@ -50,7 +51,8 @@ model2_data = {
     'T_out': [f["T_out"] for f in infos_dqn],
     'energy_consumed': [f["energy_consumed"] for f in infos_dqn],
     'energy_cost': [f["energy_cost"] for f in infos_dqn],
-    'reward': [f["reward"] for f in infos_dqn]
+    'temperature_reward': [f["temperature_reward"] for f in infos_dqn],
+    'reward': [f["total_reward"] for f in infos_dqn]
 }
 
 # Compare
@@ -65,22 +67,28 @@ fig, ax = compare_models(
     show=True
 )
 
-num_day_eval = 365
+days_eval = np.concat(
+    (np.arange(0, 30*3),np.arange(30*10, 365)),
+    axis=0
+    )
+
+num_day_eval = len(days_eval)
+
 total_rb_reward = 0.0
 total_dqn_reward = 0.0
 total_rb_cost = 0.0
 total_dqn_cost = 0.0
 
-for day in tqdm(range(num_day_eval)):
+for day in tqdm(days_eval):
     infos_rb = rule_based.run(data_index=DATA_INDEX, verbose=False)
-    rb_reward = np.array([f["reward"] for f in infos_rb]).sum()
+    rb_reward = np.array([f["temperature_reward"] for f in infos_rb]).sum()
     rb_cost = np.array([f["energy_cost"] for f in infos_rb]).sum()
 
     total_rb_reward += rb_reward
     total_rb_cost += rb_cost
 
     infos_dqn = dqn.run(render=False, episodes=1, data_index=DATA_INDEX, verbose=False)
-    dqn_reward = np.array([f["reward"] for f in infos_dqn]).sum()
+    dqn_reward = np.array([f["temperature_reward"] for f in infos_dqn]).sum()
     dqn_cost = np.array([f["energy_cost"] for f in infos_dqn]).sum()
 
     total_dqn_reward += dqn_reward

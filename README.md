@@ -3,6 +3,7 @@
 ## 1. Overview
 
 This project implements a Reinforcement Learning (RL) approach to control a building's radiator system, balancing energy savings and occupant comfort. The goal is to minimize electricity costs (including off-peak pricing) while maintaining comfortable temperatures when occupants are home.
+Note that this problem could be solved with statistic approaches, this is why this project aims to build a template for more complex behavior (high non-linearity, randomness, etc...)
 
 ## 2. Key Features
 
