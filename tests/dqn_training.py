@@ -16,11 +16,13 @@ agent = DQNAgent(
     seed=42
     )
 
-number_of_episodes = 1000
+number_of_episodes = 2000
 
-metrics = agent.train(episodes=number_of_episodes)
-agent.save(f"radiator_rl/models/dqn_{number_of_episodes}_winter_only.pt")
+# metrics = agent.train(episodes=number_of_episodes)
+# agent.save(f"radiator_rl/models/dqn_{number_of_episodes}.pt")
 
 # Evaluation workflow
-agent.load(f"radiator_rl/models/dqn_{number_of_episodes}_winter_only.pt")
-results = agent.run(episodes=1, render=True, data_index=50)
+agent.load(f"radiator_rl/models/dqn_3000_ft.pt")
+results = agent.train(episodes=number_of_episodes)
+
+agent.save(f"radiator_rl/models/dqn_5000_ft.pt")

@@ -308,10 +308,7 @@ def compare_models(
 def get_T_measurement(path, num_workers, data_index=None):
     """Load temperature measurements from CSV file."""
     df = pd.read_csv(path, index_col=False)
-    df["Month"] = pd.to_datetime(df["Date"]).dt.month
     
-    # Select form October to March only
-    df = df[(df["Month"] >= 10) | (df["Month"] <= 3)]
     dt = int((datetime.strptime(df["Date"][1], "%Y-%m-%d %H:%M:%S") - 
                 datetime.strptime(df["Date"][0], "%Y-%m-%d %H:%M:%S")).total_seconds())
     

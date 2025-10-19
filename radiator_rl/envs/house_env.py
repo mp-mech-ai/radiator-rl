@@ -37,7 +37,7 @@ class HouseEnv(gym.Env):
         self.radiator_factor = radiator_factor  # Radiator factor [W]
         self.radiator_powers = [i * radiator_factor for i in self.radiator_states]  # Radiator power levels
         self.eta = eta  # Efficiency of the heating system
-        self.lambda_energy = 0.5  # Weight factor for energy consumption in the reward function
+        self.lambda_energy = 1.5  # Weight factor for energy consumption in the reward function
 
         self.time_manager = TimeManager(
             dt=dt, 

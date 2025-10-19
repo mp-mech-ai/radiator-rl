@@ -10,21 +10,21 @@ DATA_INDEX = 2
 # Rule-based agent
 rule_based = RuleBasedAgent(
     render=False,
-    smartness=1,
+    smartness=0,
     data_path="data/clean/t_out.csv",
     seed=42
 )
-infos_rb = rule_based.run(data_index=DATA_INDEX, verbose=False)
-infos_rb = infos_rb[:-1]
+infos1 = rule_based.run(data_index=DATA_INDEX, verbose=False)
+infos1 = infos1[:-1]
 
 model1_data = {
-    'time': [f["current_step"] for f in infos_rb],
-    'T_in': [f["T_in"] for f in infos_rb],
-    'T_out': [f["T_out"] for f in infos_rb],
-    'energy_consumed': [f["energy_consumed"] for f in infos_rb],
-    'energy_cost': [f["energy_cost"] for f in infos_rb],
-    'temperature_reward': [f["temperature_reward"] for f in infos_rb],
-    'reward': [f["total_reward"] for f in infos_rb]
+    'time': [f["current_step"] for f in infos1],
+    'T_in': [f["T_in"] for f in infos1],
+    'T_out': [f["T_out"] for f in infos1],
+    'energy_consumed': [f["energy_consumed"] for f in infos1],
+    'energy_cost': [f["energy_cost"] for f in infos1],
+    'temperature_reward': [f["temperature_reward"] for f in infos1],
+    'reward': [f["total_reward"] for f in infos1]
 }
 
 # DQN agent
@@ -39,20 +39,20 @@ dqn = DQNAgent(
     seed=42
 )
 
-dqn.load("radiator_rl/models/dqn_1000_winter_only.pt")
+dqn.load("radiator_rl/models/dqn_5000_ft.pt")
 
 # Run
-infos_dqn = dqn.run(render=False, episodes=1, data_index=DATA_INDEX, verbose=False)
-infos_dqn = infos_dqn[:-1]
+infos2 = dqn.run(render=False, episodes=1, data_index=DATA_INDEX, verbose=False)
+infos2 = infos2[:-1]
 
 model2_data = {
-    'time': [f["current_step"] for f in infos_dqn],
-    'T_in': [f["T_in"] for f in infos_dqn],
-    'T_out': [f["T_out"] for f in infos_dqn],
-    'energy_consumed': [f["energy_consumed"] for f in infos_dqn],
-    'energy_cost': [f["energy_cost"] for f in infos_dqn],
-    'temperature_reward': [f["temperature_reward"] for f in infos_dqn],
-    'reward': [f["total_reward"] for f in infos_dqn]
+    'time': [f["current_step"] for f in infos2],
+    'T_in': [f["T_in"] for f in infos2],
+    'T_out': [f["T_out"] for f in infos2],
+    'energy_consumed': [f["energy_consumed"] for f in infos2],
+    'energy_cost': [f["energy_cost"] for f in infos2],
+    'temperature_reward': [f["temperature_reward"] for f in infos2],
+    'reward': [f["total_reward"] for f in infos2]
 }
 
 # Compare
@@ -80,16 +80,16 @@ total_rb_cost = 0.0
 total_dqn_cost = 0.0
 
 for day in tqdm(days_eval):
-    infos_rb = rule_based.run(data_index=DATA_INDEX, verbose=False)
-    rb_reward = np.array([f["temperature_reward"] for f in infos_rb]).sum()
-    rb_cost = np.array([f["energy_cost"] for f in infos_rb]).sum()
+    infos1 = rule_based.run(data_index=DATA_INDEX, verbose=False)
+    rb_reward = np.array([f["temperature_reward"] for f in infos1]).sum()
+    rb_cost = np.array([f["energy_cost"] for f in infos1]).sum()
 
     total_rb_reward += rb_reward
     total_rb_cost += rb_cost
 
-    infos_dqn = dqn.run(render=False, episodes=1, data_index=DATA_INDEX, verbose=False)
-    dqn_reward = np.array([f["temperature_reward"] for f in infos_dqn]).sum()
-    dqn_cost = np.array([f["energy_cost"] for f in infos_dqn]).sum()
+    infos2 = dqn.run(render=False, episodes=1, data_index=DATA_INDEX, verbose=False)
+    dqn_reward = np.array([f["temperature_reward"] for f in infos2]).sum()
+    dqn_cost = np.array([f["energy_cost"] for f in infos2]).sum()
 
     total_dqn_reward += dqn_reward
     total_dqn_cost += dqn_cost
